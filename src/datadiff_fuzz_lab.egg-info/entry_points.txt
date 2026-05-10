@@ -1,0 +1,2 @@
+[console_scripts]
+datadiff = datadiff.cli:main

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datadiff-fuzz-lab"
+version = "0.1.0"
+description = "Semantic differential fuzzing for DataFrame and embedded analytical engines"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.0",
+  "polars>=0.20",
+  "duckdb>=0.10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+datadiff = "datadiff.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
