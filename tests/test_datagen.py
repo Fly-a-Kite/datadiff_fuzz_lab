@@ -9,6 +9,12 @@ def test_generate_case_is_deterministic():
     assert a["tables"][0]["rows"] or a["tables"][0]["columns"]
 
 
+def test_generate_case_edge_float_profile_is_supported():
+    case = generate_case(123, profile="edge_float")
+    assert case.case_id == "case-00000123"
+    assert case.program.operations
+
+
 def test_generated_program_uses_existing_columns_initially():
     case = generate_case(7)
     table_cols = {c.name for c in case.tables[0].columns}

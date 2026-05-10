@@ -1,6 +1,0 @@
-pandas>=2.0
-polars>=0.20
-duckdb>=0.10
-
-[test]
-pytest>=8

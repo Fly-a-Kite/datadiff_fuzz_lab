@@ -9,7 +9,13 @@ from datadiff.oracle import Finding
 from datadiff.util import BUGS_DIR, dump_json
 
 
-def save_bug_artifact(case: Case, raw_results: dict[str, dict[str, Any]], normalized: dict[str, dict[str, Any]], findings: list[Finding]) -> Path:
+def save_bug_artifact(
+    case: Case,
+    raw_results: dict[str, dict[str, Any]],
+    normalized: dict[str, dict[str, Any]],
+    findings: list[Finding],
+    config: dict[str, Any] | None = None,
+) -> Path:
     sig = findings[0].signature if findings else case.case_id
     bug_dir = BUGS_DIR / f"bug_{sig}"
     bug_dir.mkdir(parents=True, exist_ok=True)
@@ -17,14 +23,19 @@ def save_bug_artifact(case: Case, raw_results: dict[str, dict[str, Any]], normal
     dump_json(raw_results, bug_dir / "results.json")
     dump_json(normalized, bug_dir / "normalized.json")
     dump_json([f.to_dict() for f in findings], bug_dir / "findings.json")
+    dump_json(config or {}, bug_dir / "config.json")
     dump_json(collect_environment(), bug_dir / "environment.json")
     repro = f'''#!/usr/bin/env python3
+from datadiff.config import ExperimentConfig
 from datadiff.dsl import Case
 from datadiff.runner import run_loaded_case
 from datadiff.util import load_json
 
-case = Case.from_dict(load_json(__import__("pathlib").Path(__file__).with_name("case.json")))
-result = run_loaded_case(case, backends={list(raw_results)!r}, save_artifact=False)
+here = __import__("pathlib").Path(__file__).parent
+case = Case.from_dict(load_json(here / "case.json"))
+config_data = load_json(here / "config.json")
+config = ExperimentConfig(**config_data) if config_data else ExperimentConfig()
+result = run_loaded_case(case, backends={list(raw_results)!r}, config=config, save_artifact=False)
 print(result["status"])
 for f in result["findings"]:
     print(f)
@@ -40,7 +51,11 @@ def _bug_report(case: Case, findings: list[Finding]) -> str:
     lines.append(json.dumps(case.program.to_dict(), ensure_ascii=False, indent=2))
     lines.extend(["```", "", "## Findings"])
     for f in findings:
-        lines.append(f"- **{f.kind}** severity={f.severity} suspicious={f.suspicious_backends}: {f.evidence}")
+        lines.append(
+            f"- **{f.kind}** severity={f.severity} root={f.root_cause} "
+            f"oracle={f.oracle} confidence={f.confidence} "
+            f"suspicious={f.suspicious_backends}: {f.evidence}"
+        )
     lines.extend(["", "## Reproduce", "", "```bash", "python reproduce.py", "```"])
     lines.extend(["", "## Environment", "", "```json"])
     lines.append(json.dumps(collect_environment(), ensure_ascii=False, indent=2))

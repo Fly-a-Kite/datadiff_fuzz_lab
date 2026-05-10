@@ -33,6 +33,8 @@ class PandasBackend(Backend):
                     elif cmp == "==": mask = series == val
                     elif cmp == "!=": mask = series != val
                     else: raise ValueError(cmp)
+                    if val is not None:
+                        mask = mask & series.notna()
                     df = df[mask.fillna(False)]
                 elif kind == "select":
                     df = df[list(op["columns"])]
@@ -53,6 +55,8 @@ class PandasBackend(Backend):
                     col, func, alias = agg["column"], agg["func"], agg["as"]
                     if func == "count":
                         out = df.groupby(keys, dropna=False, sort=False)[col].count().reset_index(name=alias)
+                    elif func == "sum":
+                        out = df.groupby(keys, dropna=False, sort=False)[col].sum(min_count=1).reset_index(name=alias)
                     else:
                         out = getattr(df.groupby(keys, dropna=False, sort=False)[col], func)().reset_index(name=alias)
                     df = out

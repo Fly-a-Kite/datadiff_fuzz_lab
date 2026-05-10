@@ -33,9 +33,10 @@ def _norm_value(v: Any) -> Any:
     try:
         import pandas as pd
         if pd.isna(v):
-            # Distinguish NaN from None only when Python float says NaN.
-            if isinstance(v, float) and math.isnan(v):
-                return {"kind": "nan"}
+            # In the default common subset, missing values are normalized to
+            # SQL-style NULL. Real NaN semantics should be studied in a
+            # dedicated experiment because several engines erase the
+            # distinction when nullable numeric columns are materialized.
             return None
     except Exception:
         pass

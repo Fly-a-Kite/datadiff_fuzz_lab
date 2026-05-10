@@ -51,6 +51,13 @@ class PolarsBackend(Backend):
                     col, func, alias = agg["column"], agg["func"], agg["as"]
                     if func == "count":
                         df = df.group_by(keys, maintain_order=True).agg(pl.col(col).count().alias(alias))
+                    elif func == "sum":
+                        df = df.group_by(keys, maintain_order=True).agg(
+                            pl.when(pl.col(col).count() == 0)
+                            .then(None)
+                            .otherwise(pl.col(col).sum())
+                            .alias(alias)
+                        )
                     else:
                         df = df.group_by(keys, maintain_order=True).agg(getattr(pl.col(col), func)().alias(alias))
                 else:

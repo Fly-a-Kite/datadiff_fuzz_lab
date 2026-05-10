@@ -3,9 +3,11 @@ from __future__ import annotations
 import math
 import random
 import string
-from typing import Any
+from typing import Any, Literal
 
 from .dsl import Case, ColumnSpec, Program, TableData
+
+GeneratorProfile = Literal["common", "edge_float"]
 
 
 def _rand_str(rnd: random.Random) -> str | None:
@@ -15,20 +17,28 @@ def _rand_str(rnd: random.Random) -> str | None:
     return "".join(rnd.choice(string.ascii_letters) for _ in range(rnd.randint(1, 8)))
 
 
-def _value_for_type(rnd: random.Random, typ: str, nullable: bool = True) -> Any:
+def _value_for_type(
+    rnd: random.Random,
+    typ: str,
+    nullable: bool = True,
+    profile: GeneratorProfile = "common",
+) -> Any:
     if nullable and rnd.random() < 0.18:
         return None
     if typ == "int":
         return rnd.choice([0, 1, -1, 2, -2, 10, -10, rnd.randint(-100, 100)])
     if typ == "float":
-        # Keep NaN/inf relatively rare because many systems intentionally differ there.
-        special = rnd.random()
-        if special < 0.04:
-            return float("nan")
-        if special < 0.06:
-            return float("inf")
-        if special < 0.08:
-            return float("-inf")
+        if profile == "edge_float":
+            special = rnd.random()
+            if special < 0.05:
+                return float("nan")
+            if special < 0.08:
+                return float("inf")
+            if special < 0.11:
+                return float("-inf")
+        # The common profile targets a stable subset. NaN/Infinity are valuable,
+        # but they belong in edge_float experiments because engines intentionally
+        # disagree on their comparison semantics.
         return rnd.choice([0.0, 1.0, -1.0, 0.5, -0.5, round(rnd.uniform(-50, 50), 3)])
     if typ == "bool":
         return rnd.choice([True, False])
@@ -37,7 +47,13 @@ def _value_for_type(rnd: random.Random, typ: str, nullable: bool = True) -> Any:
     raise ValueError(typ)
 
 
-def generate_table(seed: int, name: str = "t0", min_rows: int = 0, max_rows: int = 20) -> TableData:
+def generate_table(
+    seed: int,
+    name: str = "t0",
+    min_rows: int = 0,
+    max_rows: int = 20,
+    profile: GeneratorProfile = "common",
+) -> TableData:
     rnd = random.Random(seed)
     base_cols = [
         ColumnSpec("id", "int", nullable=False),
@@ -58,7 +74,7 @@ def generate_table(seed: int, name: str = "t0", min_rows: int = 0, max_rows: int
                 # Repeated IDs are useful for joins and group-like behavior.
                 row[col.name] = rnd.choice([i, i % 5, 0, 1])
             else:
-                row[col.name] = _value_for_type(rnd, col.type, col.nullable)
+                row[col.name] = _value_for_type(rnd, col.type, col.nullable, profile=profile)
         rows.append(row)
     return TableData(name=name, columns=columns, rows=rows)
 
@@ -91,7 +107,7 @@ def _literal_for_type(rnd: random.Random, typ: str) -> Any:
     return rnd.choice(["", "alpha", "beta", "中文", "missing"])
 
 
-def generate_program(seed: int, table: TableData, max_ops: int = 5) -> Program:
+def generate_program(seed: int, table: TableData, max_ops: int = 5, type_aware: bool = True) -> Program:
     rnd = random.Random(seed * 7919 + 17)
     ops: list[dict[str, Any]] = []
     available_cols = [c.name for c in table.columns]
@@ -104,6 +120,10 @@ def generate_program(seed: int, table: TableData, max_ops: int = 5) -> Program:
     grouped = False
 
     for _ in range(nops):
+        if not type_aware:
+            ops.append(_generate_type_oblivious_operation(rnd, table, available_cols))
+            continue
+
         possible = list(op_pool)
         if grouped:
             possible = ["sort", "limit", "select"]
@@ -126,7 +146,8 @@ def generate_program(seed: int, table: TableData, max_ops: int = 5) -> Program:
             comparable_cols = [c for c in comparable_cols if c in available_cols]
 
         elif op == "sort" and available_cols:
-            cols = [rnd.choice(available_cols)]
+            first = rnd.choice(available_cols)
+            cols = [first] + sorted(c for c in available_cols if c != first)
             ops.append({"op": "sort", "columns": cols, "ascending": rnd.choice([True, False])})
 
         elif op == "limit":
@@ -157,10 +178,44 @@ def generate_program(seed: int, table: TableData, max_ops: int = 5) -> Program:
             comparable_cols = available_cols
             grouped = True
 
-    ops = repair_operations(table, ops)
+    if type_aware:
+        ops = repair_operations(table, ops)
     if not ops:
         ops.append({"op": "limit", "n": len(table.rows)})
     return Program(program_id=f"prog-{seed:08d}", seed=seed, operations=ops)
+
+
+def _generate_type_oblivious_operation(
+    rnd: random.Random,
+    table: TableData,
+    available_cols: list[str],
+) -> dict[str, Any]:
+    col = rnd.choice(available_cols)
+    kind = rnd.choice(["filter", "select", "sort", "limit", "mutate", "groupby"])
+    if kind == "filter":
+        return {
+            "op": "filter",
+            "column": col,
+            "cmp": rnd.choice([">", ">=", "<", "<=", "==", "!="]),
+            "value": rnd.choice([None, -1, 0, 1, 0.5, True, False, "alpha", "missing"]),
+        }
+    if kind == "select":
+        return {"op": "select", "columns": sorted(rnd.sample(available_cols, rnd.randint(1, len(available_cols))))}
+    if kind == "sort":
+        cols = [col] + sorted(c for c in available_cols if c != col)
+        return {"op": "sort", "columns": cols, "ascending": rnd.choice([True, False])}
+    if kind == "limit":
+        return {"op": "limit", "n": rnd.randint(0, max(1, len(table.rows) + 2))}
+    if kind == "mutate":
+        return {
+            "op": "mutate",
+            "column": f"u_{rnd.randint(0, 9)}",
+            "expr": {"kind": "add_const", "source": col, "value": rnd.choice([-1, 0, 1])},
+        }
+    numeric_cols = table.numeric_columns()
+    agg_col = rnd.choice(numeric_cols or available_cols)
+    func = rnd.choice(["sum", "min", "max", "count"])
+    return {"op": "groupby", "keys": [col], "aggs": [{"column": agg_col, "func": func, "as": f"{func}_{agg_col}"}]}
 
 
 def repair_operations(table: TableData, ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -191,9 +246,12 @@ def repair_operations(table: TableData, ops: list[dict[str, Any]]) -> list[dict[
         elif kind == "sort":
             cols = [c for c in op["columns"] if c in available]
             if cols:
-                repaired.append({**op, "columns": cols})
+                full_cols = cols + sorted(c for c in available if c not in cols)
+                repaired.append({**op, "columns": full_cols})
         elif kind == "limit":
-            repaired.append(op)
+            if repaired and repaired[-1].get("op") == "sort":
+                repaired.append(op)
+            break
         elif kind == "mutate":
             expr = op["expr"]
             src = expr.get("source")
@@ -217,7 +275,7 @@ def repair_operations(table: TableData, ops: list[dict[str, Any]]) -> list[dict[
     return repaired
 
 
-def generate_case(seed: int) -> Case:
-    table = generate_table(seed, name="t0")
-    program = generate_program(seed, table)
+def generate_case(seed: int, type_aware: bool = True, profile: GeneratorProfile = "common") -> Case:
+    table = generate_table(seed, name="t0", profile=profile)
+    program = generate_program(seed, table, type_aware=type_aware)
     return Case(case_id=f"case-{seed:08d}", seed=seed, tables=[table], program=program)

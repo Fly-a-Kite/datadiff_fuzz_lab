@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from datadiff.config import ExperimentConfig
 from datadiff.dsl import Case
 from datadiff.runner import run_loaded_case
 
 
-def reduce_case(case: Case, backends: list[str], config: ExperimentConfig | None = None) -> Case:
+def reduce_case(
+    case: Case,
+    backends: list[str],
+    config: ExperimentConfig | None = None,
+    target_kinds: Iterable[str] | None = None,
+) -> Case:
     """Small deterministic reducer for the MVP.
 
     It currently minimizes rows and trailing operations. The reducer keeps a
@@ -15,6 +22,7 @@ def reduce_case(case: Case, backends: list[str], config: ExperimentConfig | None
     """
 
     config = config or ExperimentConfig(enable_artifact=False)
+    target = set(target_kinds or [])
     best = case
 
     changed = True
@@ -28,7 +36,7 @@ def reduce_case(case: Case, backends: list[str], config: ExperimentConfig | None
             candidate_rows = table.rows[:idx] + table.rows[idx + 1 :]
             candidate_table = type(table)(table.name, table.columns, candidate_rows)
             candidate = Case(best.case_id, best.seed, [candidate_table], best.program)
-            if run_loaded_case(candidate, backends, config=config, save_artifact=False)["findings"]:
+            if _preserves_target(candidate, backends, config, target):
                 best = candidate
                 changed = True
                 break
@@ -42,9 +50,23 @@ def reduce_case(case: Case, backends: list[str], config: ExperimentConfig | None
                 break
             candidate_program = type(best.program)(best.program.program_id, best.program.seed, ops[:idx] + ops[idx + 1 :])
             candidate = Case(best.case_id, best.seed, best.tables, candidate_program)
-            if run_loaded_case(candidate, backends, config=config, save_artifact=False)["findings"]:
+            if _preserves_target(candidate, backends, config, target):
                 best = candidate
                 changed = True
                 break
 
     return best
+
+
+def _preserves_target(
+    candidate: Case,
+    backends: list[str],
+    config: ExperimentConfig,
+    target_kinds: set[str],
+) -> bool:
+    findings = run_loaded_case(candidate, backends, config=config, save_artifact=False)["findings"]
+    if not findings:
+        return False
+    if not target_kinds:
+        return True
+    return bool(target_kinds & {finding["kind"] for finding in findings})

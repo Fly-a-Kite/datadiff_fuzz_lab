@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 
 OracleMode = Literal["differential", "metamorphic", "both"]
+GeneratorProfile = Literal["common", "edge_float"]
 
 
 @dataclass(slots=True)
@@ -16,6 +17,7 @@ class ExperimentConfig:
     enable_reducer: bool = False
     enable_artifact: bool = True
     oracle_mode: OracleMode = "differential"
+    generator_profile: GeneratorProfile = "common"
 
     def to_dict(self) -> dict:
         return asdict(self)
