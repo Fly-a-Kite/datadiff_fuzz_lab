@@ -4,19 +4,140 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from datadiff.artifact import save_bug_artifact
 from datadiff.backends import make_backend
+from datadiff.backends.base import Backend
+from datadiff.classification_oracle import annotate_findings
 from datadiff.config import ExperimentConfig
 from datadiff.datagen import generate_case
 from datadiff.dsl import Case
 from datadiff.env import collect_environment
 from datadiff.feedback import FeedbackState
+from datadiff.guidance import GuidanceState
 from datadiff.metamorphic import build_metamorphic_variants, evaluate_metamorphic_variants
 from datadiff.normalizer import normalize_result
 from datadiff.oracle import evaluate_case
-from datadiff.util import RUNS_DIR, append_jsonl, dump_json, ensure_dirs, utc_now
+from datadiff.preflight import preflight_case
+from datadiff.quality_oracles import evaluate_quality_oracles
+from datadiff.targets import common_capabilities, describe_targets
+from datadiff.util import CORPUS_DIR, RUNS_DIR, JsonlWriter, append_jsonl, dump_json, ensure_dirs, run_meta_path, utc_now
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _case_summary(case_data: dict[str, Any]) -> dict[str, Any]:
+    program = case_data.get("program", {})
+    return {
+        "case_id": case_data.get("case_id", ""),
+        "seed": case_data.get("seed", 0),
+        "table_count": len(case_data.get("tables", [])),
+        "row_count": sum(len(table.get("rows", [])) for table in case_data.get("tables", [])),
+        "program": {
+            "program_id": program.get("program_id", ""),
+            "seed": program.get("seed", 0),
+            "operations": program.get("operations", []),
+        },
+    }
+
+
+def _normalized_summary(normalized: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        backend: {
+            "backend": data.get("backend", backend),
+            "status": data.get("status", "unknown"),
+            "columns": data.get("columns", []),
+            "row_count": len(data.get("rows", [])),
+            "error_type": data.get("error_type", ""),
+            "error": data.get("error", ""),
+        }
+        for backend, data in normalized.items()
+    }
+
+
+def _raw_results_summary(raw_results: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        backend: {
+            "backend": data.get("backend", backend),
+            "status": data.get("status", "unknown"),
+            "error_type": data.get("error_type", ""),
+            "duration_ms": data.get("duration_ms", 0.0),
+        }
+        for backend, data in raw_results.items()
+    }
+
+
+def _guidance_summary(guidance: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "score": guidance.get("score", 0.0),
+        "matched_targets": guidance.get("matched_targets", []),
+        "candidate_count": guidance.get("candidate_count", 1),
+        "contributing_candidate_count": guidance.get("contributing_candidate_count", guidance.get("candidate_count", 1)),
+        "pruned_candidate_count": guidance.get("pruned_candidate_count", 0),
+        "feature_count": len(guidance.get("features", [])),
+        "frontier_bucket_count": len(guidance.get("frontier_buckets", [])),
+        "path_coverage_proxy": guidance.get("score_breakdown", {}).get("path_coverage_proxy", 0.0),
+        "data_sensitivity": guidance.get("score_breakdown", {}).get("data_sensitivity", 0.0),
+        "frontier_conformance": guidance.get("score_breakdown", {}).get("frontier_conformance", 0.0),
+        "contribution_potential": guidance.get("score_breakdown", {}).get("contribution_potential", 0.0),
+    }
+
+
+def _quality_oracle_summary(oracles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": oracle.get("name", "unknown"),
+            "verdict": oracle.get("verdict", "unknown"),
+            "passed": bool(oracle.get("passed", False)),
+            "score": oracle.get("score", 0.0),
+        }
+        for oracle in oracles
+    ]
+
+
+def _compact_log_row(row: dict[str, Any], log_level: str) -> dict[str, Any]:
+    if log_level == "full":
+        return row
+    has_findings = bool(row.get("findings"))
+    if log_level == "compact" and has_findings:
+        # Finding rows keep reproduction detail; run-level duplicated metadata
+        # stays in meta.json and artifacts.
+        return {
+            key: value
+            for key, value in row.items()
+            if key not in {"environment", "targets"}
+        }
+
+    out = {
+        "run_at": row.get("run_at", ""),
+        "status": row.get("status", "unknown"),
+        "case": _case_summary(row.get("case", {})),
+        "behavior_signature": row.get("behavior_signature", ""),
+        "duration_ms": row.get("duration_ms", 0.0),
+        "findings": row.get("findings", []),
+        "bug_dir": row.get("bug_dir", ""),
+        "candidate_source": row.get("candidate_source", "generated"),
+        "preflight": row.get("preflight", {}),
+        "quality_oracles": _quality_oracle_summary(row.get("quality_oracles", [])),
+        "guidance": _guidance_summary(row.get("guidance", {})),
+        "candidate_seed_start": row.get("candidate_seed_start", 0),
+        "candidate_pool_size": row.get("candidate_pool_size", 1),
+        "case_index": row.get("case_index", 0),
+        "elapsed_s": row.get("elapsed_s", 0.0),
+        "is_new_behavior": row.get("is_new_behavior", False),
+        "stored_in_feedback_corpus": row.get("stored_in_feedback_corpus", False),
+        "feedback_corpus_persisted": row.get("feedback_corpus_persisted", False),
+    }
+    if log_level == "compact":
+        out["normalized"] = _normalized_summary(row.get("normalized", {}))
+        out["raw_results"] = _raw_results_summary(row.get("raw_results", {}))
+    else:
+        out["backend_status"] = {
+            backend: data.get("status", "unknown")
+            for backend, data in row.get("normalized", {}).items()
+        }
+    return out
 
 
 def behavior_signature(row: dict[str, Any]) -> str:
@@ -45,11 +166,12 @@ def _execute_case(
     case: Case,
     backends: list[str],
     config: ExperimentConfig,
+    backend_instances: dict[str, Backend] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     raw_results = {}
     normalized = {}
     for backend_name in backends:
-        backend = make_backend(backend_name)
+        backend = backend_instances[backend_name] if backend_instances is not None else make_backend(backend_name)
         result = backend.run(case.tables, case.program)
         raw_results[backend_name] = {
             k: v
@@ -69,10 +191,13 @@ def run_loaded_case(
     backends: list[str],
     config: ExperimentConfig | None = None,
     save_artifact: bool = True,
+    backend_instances: dict[str, Backend] | None = None,
+    environment: dict[str, str] | None = None,
+    target_specs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     config = config or ExperimentConfig()
     started = time.perf_counter()
-    raw_results, normalized = _execute_case(case, backends, config)
+    raw_results, normalized = _execute_case(case, backends, config, backend_instances=backend_instances)
 
     findings = []
     if config.enable_differential_oracle:
@@ -80,8 +205,13 @@ def run_loaded_case(
     metamorphic_rows: dict[str, Any] = {}
     if config.enable_metamorphic_oracle:
         variant_results = {}
-        for variant in build_metamorphic_variants(case):
-            variant_raw, variant_norm = _execute_case(variant.case, backends, config)
+        for variant in build_metamorphic_variants(case, limit=max(0, config.metamorphic_variant_limit)):
+            variant_raw, variant_norm = _execute_case(
+                variant.case,
+                backends,
+                config,
+                backend_instances=backend_instances,
+            )
             variant_results[variant.name] = variant_norm
             metamorphic_rows[variant.name] = {
                 "relation": variant.relation,
@@ -90,16 +220,26 @@ def run_loaded_case(
                 "normalized": {k: v.to_dict() for k, v in variant_norm.items()},
             }
         findings.extend(evaluate_metamorphic_variants(case, normalized, variant_results))
+    if findings:
+        annotate_findings(
+            case,
+            findings,
+            normalized=normalized,
+            raw_results=raw_results,
+            config=config.to_dict(),
+            backends=backends,
+        )
 
     row = {
         "run_at": utc_now(),
         "case": case.to_dict(),
+        "targets": target_specs if target_specs is not None else describe_targets(backends),
         "raw_results": raw_results,
         "normalized": {k: v.to_dict() for k, v in normalized.items()},
         "metamorphic": metamorphic_rows,
         "findings": [f.to_dict() for f in findings],
         "config": config.to_dict(),
-        "environment": collect_environment(),
+        "environment": environment if environment is not None else collect_environment(),
         "status": "bug" if findings else "ok",
         "duration_ms": (time.perf_counter() - started) * 1000,
     }
@@ -122,53 +262,214 @@ def run_fuzz(
     backends: list[str],
     config: ExperimentConfig | None = None,
     duration_s: float | None = None,
+    save_cases: bool = False,
+    case_log_file: Path | None = None,
+    checkpoint_interval_s: float | None = None,
+    progress_interval_s: float | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     ensure_dirs()
     config = config or ExperimentConfig()
     if cases is None and duration_s is None:
         cases = 100
     run_id = f"run-{utc_now().replace(':', '').replace('-', '').replace('Z', '')}-{time.time_ns()}"
-    run_file = RUNS_DIR / f"{run_id}.jsonl"
+    run_suffix = ".jsonl.gz" if config.compress_run_log else ".jsonl"
+    run_file = RUNS_DIR / f"{run_id}{run_suffix}"
+    if case_log_file is not None:
+        save_cases = True
+    resolved_case_log_file = case_log_file
+    if save_cases and resolved_case_log_file is None:
+        resolved_case_log_file = CORPUS_DIR / "generated" / f"{run_id}.cases.jsonl"
+    checkpoint_file = RUNS_DIR / f"{run_id}.checkpoint.json" if checkpoint_interval_s is not None else None
+    backend_instances = {backend_name: make_backend(backend_name) for backend_name in backends}
+    environment = collect_environment()
+    target_specs = describe_targets(backends)
+    target_common_capabilities = common_capabilities(backends)
     seen: set[str] = set()
-    feedback = FeedbackState() if config.enable_feedback else None
+    feedback = (
+        FeedbackState(
+            persist_to_disk=config.persist_feedback_corpus,
+            max_persisted=config.feedback_persist_limit,
+        )
+        if config.enable_feedback
+        else None
+    )
+    guided = config.guidance_strategy == "guided"
+    candidate_pool = max(1, config.guidance_candidate_pool if guided else 1)
+    guidance = GuidanceState(config.guidance_targets) if guided else None
     started = time.perf_counter()
+    last_checkpoint = started
+    last_progress = started
     executed = 0
+    next_seed = seed
     findings_count = 0
     new_behavior_count = 0
+    artifact_saved_count = 0
+    preflight_repaired_count = 0
+    preflight_fallback_count = 0
+    preflight_invalid_count = 0
+    quality_oracle_counts: dict[str, int] = {}
+
+    def snapshot(status: str) -> dict[str, Any]:
+        elapsed_s = time.perf_counter() - started
+        return {
+            "run_id": run_id,
+            "status": status,
+            "run_file": str(run_file),
+            "case_log_file": str(resolved_case_log_file) if resolved_case_log_file is not None else "",
+            "checkpoint_file": str(checkpoint_file) if checkpoint_file is not None else "",
+            "requested_cases": cases,
+            "executed_cases": executed,
+            "duration_s": duration_s,
+            "elapsed_s": elapsed_s,
+            "throughput_cases_s": executed / elapsed_s if elapsed_s else 0.0,
+            "findings": findings_count,
+            "new_behavior_cases": new_behavior_count,
+            "saved_artifacts": artifact_saved_count,
+            "preflight": {
+                "repaired_cases": preflight_repaired_count,
+                "fallback_cases": preflight_fallback_count,
+                "invalid_cases": preflight_invalid_count,
+            },
+            "quality_oracles": quality_oracle_counts,
+            "seed": seed,
+            "next_seed": next_seed,
+            "guidance": {
+                "strategy": config.guidance_strategy,
+                "candidate_pool": candidate_pool,
+                "targets": config.guidance_targets,
+            },
+            "backends": backends,
+            "targets": target_specs,
+            "common_capabilities": target_common_capabilities,
+            "config": config.to_dict(),
+            "environment": environment,
+            "log_level": config.log_level,
+            "updated_at": utc_now(),
+        }
+
+    def write_checkpoint(status: str) -> None:
+        if checkpoint_file is not None:
+            dump_json(snapshot(status), checkpoint_file)
+
+    run_writer_context = JsonlWriter(run_file, compresslevel=1)
+    run_writer = run_writer_context.__enter__()
+    case_writer_context = JsonlWriter(resolved_case_log_file, compresslevel=1) if resolved_case_log_file else None
+    case_writer = case_writer_context.__enter__() if case_writer_context is not None else None
 
     while True:
         if cases is not None and executed >= cases:
             break
         if duration_s is not None and executed > 0 and (time.perf_counter() - started) >= duration_s:
             break
-        case_seed = seed + executed
-        generated = generate_case(
-            case_seed,
-            type_aware=config.enable_type_aware_generation,
-            profile=config.generator_profile,
+        candidate_seed_start = next_seed
+        candidates: list[Case] = []
+        candidate_meta: dict[int, dict[str, Any]] = {}
+        for offset in range(candidate_pool):
+            case_seed = candidate_seed_start + offset
+            generated = generate_case(
+                case_seed,
+                type_aware=config.enable_type_aware_generation,
+                profile=config.generator_profile,
+            )
+            selected = feedback.choose_case(case_seed, generated) if feedback is not None else generated
+            source = "feedback_mutation" if selected.case_id != generated.case_id else "generated"
+            preflight = preflight_case(
+                selected,
+                enable_validation=config.enable_preflight_validation,
+                enable_repair=config.enable_preflight_repair,
+            )
+            candidate = preflight.case
+            candidate_meta[id(candidate)] = {
+                "source": source,
+                "generated_seed": case_seed,
+                "preflight": preflight.to_dict(),
+            }
+            candidates.append(candidate)
+        next_seed += candidate_pool
+        if guidance is not None:
+            decision = guidance.choose_case(candidates)
+            case = decision.case
+            guidance_row = decision.to_dict()
+        else:
+            case = candidates[0]
+            guidance_row = {
+                "score": 0.0,
+                "features": [],
+                "matched_targets": [],
+                "candidate_count": 1,
+            }
+        selected_meta = candidate_meta.get(
+            id(case),
+            {
+                "source": "generated",
+                "generated_seed": case.seed,
+                "preflight": {
+                    "valid": True,
+                    "repaired": False,
+                    "fallback_used": False,
+                    "errors_before": [],
+                    "errors_after": [],
+                },
+            },
         )
-        case = feedback.choose_case(case_seed, generated) if feedback is not None else generated
+        preflight_row = selected_meta["preflight"]
+        case_seed = case.seed
+        if case_writer is not None:
+            case_writer.write(
+                {
+                    "run_id": run_id,
+                    "case_index": executed,
+                    "seed": case_seed,
+                    "candidate_seed_start": candidate_seed_start,
+                    "candidate_pool_size": candidate_pool,
+                    "guidance": guidance_row,
+                    "candidate_source": selected_meta["source"],
+                    "preflight": preflight_row,
+                    "generated_at": utc_now(),
+                    "case": case.to_dict(),
+                }
+            )
+        save_artifact_for_case = _artifact_budget_available(config, artifact_saved_count)
         row = run_loaded_case(
             case,
             backends=backends,
             config=config,
-            save_artifact=not config.enable_reducer,
+            save_artifact=not config.enable_reducer and save_artifact_for_case,
+            backend_instances=backend_instances,
+            environment=environment,
+            target_specs=target_specs,
         )
         if row["findings"] and config.enable_reducer:
             from datadiff.reducer import reduce_case
 
-            reduced = reduce_case(case, backends=backends, config=ExperimentConfig(
-                enable_type_aware_generation=config.enable_type_aware_generation,
-                enable_normalizer=config.enable_normalizer,
-                enable_differential_oracle=config.enable_differential_oracle,
-                enable_metamorphic_oracle=config.enable_metamorphic_oracle,
-                enable_feedback=False,
-                enable_reducer=False,
-                enable_artifact=False,
-                oracle_mode=config.oracle_mode,
-                generator_profile=config.generator_profile,
-            ), target_kinds=[finding["kind"] for finding in row["findings"]])
-            reduced_row = run_loaded_case(reduced, backends=backends, config=config, save_artifact=True)
+            reduced = reduce_case(
+                case,
+                backends=backends,
+                config=ExperimentConfig(
+                    enable_type_aware_generation=config.enable_type_aware_generation,
+                    enable_normalizer=config.enable_normalizer,
+                    enable_differential_oracle=config.enable_differential_oracle,
+                    enable_metamorphic_oracle=config.enable_metamorphic_oracle,
+                    enable_feedback=False,
+                    enable_reducer=False,
+                    enable_artifact=False,
+                    oracle_mode=config.oracle_mode,
+                    generator_profile=config.generator_profile,
+                    metamorphic_variant_limit=config.metamorphic_variant_limit,
+                ),
+                target_kinds=[finding["kind"] for finding in row["findings"]],
+                target_roots=[finding.get("root_cause", "unknown") for finding in row["findings"]],
+            )
+            reduced_row = run_loaded_case(
+                reduced,
+                backends=backends,
+                config=config,
+                save_artifact=_artifact_budget_available(config, artifact_saved_count),
+                backend_instances=backend_instances,
+                environment=environment,
+                target_specs=target_specs,
+            )
             reduced_row["original_case"] = case.to_dict()
             reduced_row["reduction"] = {
                 "original_rows": len(case.tables[0].rows),
@@ -177,41 +478,86 @@ def run_fuzz(
                 "reduced_ops": len(reduced.program.operations),
             }
             row = reduced_row
+        if row.get("findings") and row.get("bug_dir"):
+            artifact_saved_count += 1
+            row["artifact_saved"] = True
+        elif row.get("findings") and config.enable_artifact:
+            row["artifact_saved"] = False
+            row["artifact_skipped_reason"] = "artifact_limit_reached"
 
         sig = row["behavior_signature"]
         row["is_new_behavior"] = sig not in seen
         seen.add(sig)
         if feedback is not None:
             row["stored_in_feedback_corpus"] = feedback.record(case, sig, bool(row["findings"]))
+            row["feedback_corpus_persisted"] = feedback.last_persisted_to_disk
         else:
             row["stored_in_feedback_corpus"] = False
+            row["feedback_corpus_persisted"] = False
+        if guidance is not None:
+            guidance.record_result(case, row)
+        row["guidance"] = guidance_row
+        row["candidate_source"] = selected_meta["source"]
+        row["preflight"] = preflight_row
+        row["candidate_seed_start"] = candidate_seed_start
+        row["candidate_pool_size"] = candidate_pool
         row["case_index"] = executed
         row["elapsed_s"] = round(time.perf_counter() - started, 6)
+        quality_oracles = evaluate_quality_oracles(
+            case,
+            row,
+            candidate_source=selected_meta["source"],
+            preflight=preflight_row,
+            guidance_decision=guidance_row,
+            guidance_strategy=config.guidance_strategy,
+            guidance_targets=config.guidance_targets,
+        )
+        row["quality_oracles"] = [oracle.to_dict() for oracle in quality_oracles]
+        for oracle in row["quality_oracles"]:
+            quality_oracle_counts[f"{oracle['name']}:{oracle['verdict']}"] = (
+                quality_oracle_counts.get(f"{oracle['name']}:{oracle['verdict']}", 0) + 1
+            )
+        preflight_repaired_count += int(bool(preflight_row.get("repaired", False)))
+        preflight_fallback_count += int(bool(preflight_row.get("fallback_used", False)))
+        preflight_invalid_count += int(not bool(preflight_row.get("valid", True)))
         findings_count += len(row["findings"])
         new_behavior_count += int(row["is_new_behavior"])
-        append_jsonl(row, run_file)
+        run_writer.write(_compact_log_row(row, config.log_level))
         executed += 1
+
+        now = time.perf_counter()
+        if checkpoint_interval_s is not None and (now - last_checkpoint) >= checkpoint_interval_s:
+            write_checkpoint("running")
+            last_checkpoint = now
+        if (
+            progress_callback is not None
+            and progress_interval_s is not None
+            and (now - last_progress) >= progress_interval_s
+        ):
+            progress_callback(snapshot("running"))
+            last_progress = now
 
         if duration_s is not None and (time.perf_counter() - started) >= duration_s:
             break
 
+    if case_writer_context is not None:
+        case_writer_context.__exit__(None, None, None)
+    run_writer_context.__exit__(None, None, None)
+
     elapsed_s = time.perf_counter() - started
-    dump_json(
-        {
-            "run_id": run_id,
-            "run_file": str(run_file),
-            "requested_cases": cases,
-            "executed_cases": executed,
-            "duration_s": duration_s,
-            "elapsed_s": elapsed_s,
-            "throughput_cases_s": executed / elapsed_s if elapsed_s else 0.0,
-            "findings": findings_count,
-            "new_behavior_cases": new_behavior_count,
-            "seed": seed,
-            "backends": backends,
-            "config": config.to_dict(),
-            "environment": collect_environment(),
-        },
-        RUNS_DIR / f"{run_id}.meta.json",
-    )
+    meta = snapshot("completed")
+    meta["elapsed_s"] = elapsed_s
+    meta["throughput_cases_s"] = executed / elapsed_s if elapsed_s else 0.0
+    dump_json(meta, run_meta_path(run_file))
+    write_checkpoint("completed")
+    if progress_callback is not None:
+        progress_callback(meta)
     return run_file
+
+
+def _artifact_budget_available(config: ExperimentConfig, saved_count: int) -> bool:
+    if not config.enable_artifact:
+        return False
+    if config.artifact_limit is None:
+        return True
+    return saved_count < max(0, int(config.artifact_limit))

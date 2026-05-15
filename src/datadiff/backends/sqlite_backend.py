@@ -40,6 +40,24 @@ def _sql_type(kind: str) -> str:
     return "TEXT"
 
 
+def _replace_projection(cols: list[str], column: str, expr_sql: str) -> tuple[str, list[str]]:
+    kept_cols = [col for col in cols if col != column]
+    select_parts = [f"q.{_quote(col)}" for col in kept_cols]
+    select_parts.append(f"{expr_sql} AS {_quote(column)}")
+    return ", ".join(select_parts), kept_cols + [column]
+
+
+def _order_clause(columns: list[str], ascending: bool) -> str:
+    # SQLite sorts NULLs first for ASC. Use an explicit null discriminator to
+    # match the common subset used by the other backends: NULLS LAST.
+    order_parts = []
+    for c in columns:
+        q = _quote(c)
+        order_parts.append(f"({q} IS NULL) ASC")
+        order_parts.append(f"{q} {'ASC' if ascending else 'DESC'}")
+    return ", ".join(order_parts)
+
+
 class SQLiteBackend(Backend):
     name = "sqlite"
 
@@ -48,22 +66,44 @@ class SQLiteBackend(Backend):
         try:
             import pandas as pd
 
-            table = tables[0]
-            column_types = {c.name: c.type for c in table.columns}
+            table_by_name = {table.name: table for table in tables}
+            column_types = {c.name: c.type for table in tables for c in table.columns}
+            current_cols = [c.name for c in tables[0].columns]
             con = sqlite3.connect(":memory:")
-            col_defs = ", ".join(f"{_quote(c.name)} {_sql_type(c.type)}" for c in table.columns)
-            con.execute(f"CREATE TABLE t0 ({col_defs})")
-            if table.rows:
-                cols = [c.name for c in table.columns]
-                placeholders = ", ".join("?" for _ in cols)
-                con.executemany(
-                    f"INSERT INTO t0 ({', '.join(_quote(c) for c in cols)}) VALUES ({placeholders})",
-                    [[row.get(c) for c in cols] for row in table.rows],
-                )
+            for table in tables:
+                col_defs = ", ".join(f"{_quote(c.name)} {_sql_type(c.type)}" for c in table.columns)
+                con.execute(f"CREATE TABLE {_quote(table.name)} ({col_defs})")
+                if table.rows:
+                    cols = [c.name for c in table.columns]
+                    placeholders = ", ".join("?" for _ in cols)
+                    con.executemany(
+                        f"INSERT INTO {_quote(table.name)} ({', '.join(_quote(c) for c in cols)}) VALUES ({placeholders})",
+                        [[row.get(c) for c in cols] for row in table.rows],
+                    )
             query = "SELECT * FROM t0"
+            pending_order: tuple[list[str], bool] | None = None
             for op in program.operations:
                 kind = op["op"]
-                if kind == "filter":
+                if kind == "join":
+                    right = table_by_name[op["table"]]
+                    right_cols = [
+                        f"r.{_quote(c.name)} AS {_quote(c.name)}"
+                        for c in right.columns
+                        if c.name != op["right_on"]
+                    ]
+                    select_right = ", " + ", ".join(right_cols) if right_cols else ""
+                    join_kind = "LEFT JOIN" if op["how"] == "left" else "INNER JOIN"
+                    query = (
+                        f"SELECT q.*{select_right} FROM ({query}) q {join_kind} {_quote(right.name)} r "
+                        f"ON q.{_quote(op['left_on'])} = r.{_quote(op['right_on'])}"
+                    )
+                    current_cols.extend(
+                        c.name
+                        for c in right.columns
+                        if c.name != op["right_on"] and c.name not in current_cols
+                    )
+                    pending_order = None
+                elif kind == "filter":
                     query = (
                         f"SELECT * FROM ({query}) q "
                         f"WHERE {_quote(op['column'])} {op['cmp']} {_lit(op['value'])}"
@@ -71,37 +111,60 @@ class SQLiteBackend(Backend):
                 elif kind == "select":
                     cols = ", ".join(_quote(c) for c in op["columns"])
                     query = f"SELECT {cols} FROM ({query}) q"
+                    current_cols = list(op["columns"])
+                    if pending_order is not None:
+                        order_cols, ascending = pending_order
+                        pending_order = (order_cols, ascending) if set(order_cols).issubset(current_cols) else None
                 elif kind == "sort":
-                    # SQLite sorts NULLs first for ASC. Use an explicit null
-                    # discriminator to match the common subset used by the
-                    # other backends: NULLS LAST.
-                    order_parts = []
-                    for c in op["columns"]:
-                        q = _quote(c)
-                        order_parts.append(f"({q} IS NULL) ASC")
-                        order_parts.append(f"{q} {'ASC' if op['ascending'] else 'DESC'}")
-                    query = f"SELECT * FROM ({query}) q ORDER BY {', '.join(order_parts)}"
+                    pending_order = (list(op["columns"]), bool(op["ascending"]))
                 elif kind == "limit":
-                    query = f"SELECT * FROM ({query}) q LIMIT {int(op['n'])}"
+                    if pending_order is not None:
+                        query = (
+                            f"SELECT * FROM ({query}) q "
+                            f"ORDER BY {_order_clause(*pending_order)} LIMIT {int(op['n'])}"
+                        )
+                    else:
+                        query = f"SELECT * FROM ({query}) q LIMIT {int(op['n'])}"
+                    pending_order = None
                 elif kind == "mutate":
                     expr = op["expr"]
-                    if expr["kind"] != "add_const":
+                    if expr["kind"] == "add_const":
+                        expr_sql = f"q.{_quote(expr['source'])} + {_lit(expr['value'])}"
+                    elif expr["kind"] == "arith_const":
+                        if expr["op"] == "div":
+                            expr_sql = f"1.0 * q.{_quote(expr['source'])} / {_lit(expr['value'])}"
+                        else:
+                            op_sql = {"sub": "-", "mul": "*", "mod": "%"}[expr["op"]]
+                            expr_sql = f"q.{_quote(expr['source'])} {op_sql} {_lit(expr['value'])}"
+                    elif expr["kind"] == "cast" and expr["to"] == "float":
+                        expr_sql = f"CAST(q.{_quote(expr['source'])} AS REAL)"
+                    elif expr["kind"] == "string_length":
+                        expr_sql = f"LENGTH(q.{_quote(expr['source'])})"
+                    elif expr["kind"] == "string_lower":
+                        expr_sql = f"LOWER(q.{_quote(expr['source'])})"
+                    else:
                         raise ValueError(expr["kind"])
-                    query = (
-                        f"SELECT *, {_quote(expr['source'])} + {_lit(expr['value'])} "
-                        f"AS {_quote(op['column'])} FROM ({query}) q"
-                    )
+                    projection, current_cols = _replace_projection(current_cols, op["column"], expr_sql)
+                    query = f"SELECT {projection} FROM ({query}) q"
+                    if pending_order is not None and op["column"] in pending_order[0]:
+                        pending_order = None
                 elif kind == "groupby":
                     keys = list(op["keys"])
-                    agg = op["aggs"][0]
-                    func = "COUNT" if agg["func"] == "count" else agg["func"].upper()
                     key_sql = ", ".join(_quote(k) for k in keys)
+                    agg_sql = []
+                    for agg in op["aggs"]:
+                        func = "COUNT" if agg["func"] == "count" else agg["func"].upper()
+                        agg_sql.append(f"{func}({_quote(agg['column'])}) AS {_quote(agg['as'])}")
                     query = (
-                        f"SELECT {key_sql}, {func}({_quote(agg['column'])}) AS {_quote(agg['as'])} "
+                        f"SELECT {key_sql}, {', '.join(agg_sql)} "
                         f"FROM ({query}) q GROUP BY {key_sql}"
                     )
+                    current_cols = keys + [agg["as"] for agg in op["aggs"]]
+                    pending_order = None
                 else:
                     raise ValueError(kind)
+            if pending_order is not None:
+                query = f"SELECT * FROM ({query}) q ORDER BY {_order_clause(*pending_order)}"
             cur = con.execute(query)
             columns = [desc[0] for desc in cur.description]
             out = pd.DataFrame(cur.fetchall(), columns=columns)

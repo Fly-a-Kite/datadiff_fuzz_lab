@@ -7,26 +7,28 @@ from typing import Any
 
 from datadiff.datagen import repair_operations
 from datadiff.dsl import Case, Program, TableData
+from datadiff.util import unique_preserve_order
 
 
 def mutate_case(case: Case, seed: int) -> Case:
     rnd = random.Random(seed * 104729 + case.seed)
-    table = copy.deepcopy(case.tables[0])
+    tables = copy.deepcopy(case.tables)
+    table = tables[0]
     operations = copy.deepcopy(case.program.operations)
     choice = rnd.choice(["value", "append_op", "drop_op", "tweak_op"])
 
     if choice == "value":
         _mutate_value(table, rnd)
     elif choice == "append_op":
-        op = _random_operation(table, operations, rnd)
+        op = _random_operation(tables, operations, rnd)
         if op is not None:
             operations.append(op)
     elif choice == "drop_op" and len(operations) > 1:
         del operations[rnd.randrange(len(operations))]
     elif choice == "tweak_op" and operations:
-        _tweak_operation(table, operations[rnd.randrange(len(operations))], rnd)
+        _tweak_operation(tables, operations[rnd.randrange(len(operations))], rnd)
 
-    operations = repair_operations(table, operations)
+    operations = repair_operations(table, operations, extra_tables=tables[1:])
     if not operations:
         operations = [{"op": "limit", "n": len(table.rows)}]
     program = Program(
@@ -37,7 +39,7 @@ def mutate_case(case: Case, seed: int) -> Case:
     return Case(
         case_id=f"{case.case_id}-mut-{seed}",
         seed=seed,
-        tables=[table],
+        tables=tables,
         program=program,
     )
 
@@ -64,18 +66,22 @@ def _mutate_value(table: TableData, rnd: random.Random) -> None:
         row[col.name] = rnd.choice(["", "alpha", "ALPHA", "中文", str(current) + "_x"])
 
 
-def _random_operation(table: TableData, operations: list[dict[str, Any]], rnd: random.Random) -> dict[str, Any] | None:
-    available = _available_columns(table, operations)
+def _random_operation(tables: list[TableData], operations: list[dict[str, Any]], rnd: random.Random) -> dict[str, Any] | None:
+    table = tables[0]
+    available = _available_columns(tables, operations)
     if not available:
         return None
-    numeric = [c for c in available if _column_type(table, c) in {"int", "float"} or c.startswith(("m_", "sum_", "min_", "max_", "count_"))]
+    numeric = [c for c in available if _column_type(tables, c) in {"int", "float"} or c.startswith(("m_", "sum_", "min_", "max_", "count_"))]
+    strings = [c for c in available if _column_type(tables, c) == "str"]
     choices = ["filter", "select", "sort", "limit"]
+    if numeric or strings:
+        choices.append("mutate")
     if numeric:
-        choices.extend(["mutate", "groupby"])
+        choices.append("groupby")
     kind = rnd.choice(choices)
     if kind == "filter":
         col = rnd.choice(available)
-        typ = _column_type(table, col)
+        typ = _column_type(tables, col)
         cmp = rnd.choice(["==", "!="] if typ in {"str", "bool"} else [">", ">=", "<", "<=", "==", "!="])
         return {"op": "filter", "column": col, "cmp": cmp, "value": _literal_for_type(typ, rnd)}
     if kind == "select":
@@ -87,12 +93,20 @@ def _random_operation(table: TableData, operations: list[dict[str, Any]], rnd: r
         return {"op": "sort", "columns": cols, "ascending": rnd.choice([True, False])}
     if kind == "limit":
         return {"op": "limit", "n": rnd.randint(0, max(1, len(table.rows) + 3))}
-    if kind == "mutate" and numeric:
-        src = rnd.choice(numeric)
+    if kind == "mutate" and (numeric or strings):
+        if strings and (not numeric or rnd.random() < 0.3):
+            src = rnd.choice(strings)
+            expr = rnd.choice([
+                {"kind": "string_length", "source": src},
+                {"kind": "string_lower", "source": src},
+            ])
+        else:
+            src = rnd.choice(numeric)
+            expr = {"kind": "add_const", "source": src, "value": rnd.choice([-10, -1, 0, 1, 10])}
         return {
             "op": "mutate",
             "column": f"m_{len([o for o in operations if o.get('op') == 'mutate'])}",
-            "expr": {"kind": "add_const", "source": src, "value": rnd.choice([-10, -1, 0, 1, 10])},
+            "expr": expr,
         }
     if kind == "groupby" and numeric:
         keys = [rnd.choice(available)]
@@ -102,35 +116,42 @@ def _random_operation(table: TableData, operations: list[dict[str, Any]], rnd: r
     return None
 
 
-def _tweak_operation(table: TableData, op: dict[str, Any], rnd: random.Random) -> None:
+def _tweak_operation(tables: list[TableData], op: dict[str, Any], rnd: random.Random) -> None:
     kind = op.get("op")
     if kind == "filter":
         op["cmp"] = rnd.choice([">", ">=", "<", "<=", "==", "!="])
-        op["value"] = _literal_for_type(_column_type(table, op["column"]), rnd)
+        op["value"] = _literal_for_type(_column_type(tables, op["column"]), rnd)
     elif kind == "sort":
         op["ascending"] = not bool(op.get("ascending", True))
     elif kind == "limit":
         op["n"] = max(0, int(op.get("n", 0)) + rnd.choice([-2, -1, 1, 2]))
     elif kind == "mutate":
-        op["expr"]["value"] = op["expr"].get("value", 0) + rnd.choice([-2, -1, 1, 2])
+        if "value" in op["expr"]:
+            op["expr"]["value"] = op["expr"].get("value", 0) + rnd.choice([-2, -1, 1, 2])
 
 
-def _available_columns(table: TableData, operations: list[dict[str, Any]]) -> list[str]:
-    available = [c.name for c in table.columns]
+def _available_columns(tables: list[TableData], operations: list[dict[str, Any]]) -> list[str]:
+    available = [c.name for c in tables[0].columns]
+    table_by_name = {table.name: table for table in tables}
     for op in operations:
-        if op.get("op") == "select":
-            available = [c for c in op.get("columns", []) if c in available]
+        if op.get("op") == "join":
+            right = table_by_name.get(op.get("table", ""))
+            if right is not None:
+                available.extend(c.name for c in right.columns if c.name != op.get("right_on"))
+        elif op.get("op") == "select":
+            available = [c for c in unique_preserve_order(op.get("columns", [])) if c in available]
         elif op.get("op") == "mutate":
             available.append(op["column"])
         elif op.get("op") == "groupby":
-            available = list(op.get("keys", [])) + [agg["as"] for agg in op.get("aggs", [])]
-    return available
+            available = unique_preserve_order(list(op.get("keys", [])) + [agg["as"] for agg in op.get("aggs", [])])
+    return unique_preserve_order(available)
 
 
-def _column_type(table: TableData, name: str) -> str:
-    for col in table.columns:
-        if col.name == name:
-            return col.type
+def _column_type(tables: list[TableData], name: str) -> str:
+    for table in tables:
+        for col in table.columns:
+            if col.name == name:
+                return col.type
     return "float" if name.startswith(("m_", "sum_", "min_", "max_")) else "int"
 
 

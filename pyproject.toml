@@ -14,7 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+arrow = ["pyarrow>=14"]
+datafusion = ["datafusion>=40", "pyarrow>=14"]
 test = ["pytest>=8"]
+all = [
+  "datafusion>=40",
+  "pyarrow>=14",
+  "pytest>=8",
+]
 
 [project.scripts]
 datadiff = "datadiff.cli:main"

@@ -6,6 +6,7 @@ from typing import Any
 from datadiff.dsl import Case
 from datadiff.env import collect_environment
 from datadiff.oracle import Finding
+from datadiff.targets import describe_targets
 from datadiff.util import BUGS_DIR, dump_json
 
 
@@ -24,6 +25,7 @@ def save_bug_artifact(
     dump_json(normalized, bug_dir / "normalized.json")
     dump_json([f.to_dict() for f in findings], bug_dir / "findings.json")
     dump_json(config or {}, bug_dir / "config.json")
+    dump_json(describe_targets(list(raw_results)), bug_dir / "targets.json")
     dump_json(collect_environment(), bug_dir / "environment.json")
     repro = f'''#!/usr/bin/env python3
 from datadiff.config import ExperimentConfig
@@ -54,8 +56,13 @@ def _bug_report(case: Case, findings: list[Finding]) -> str:
         lines.append(
             f"- **{f.kind}** severity={f.severity} root={f.root_cause} "
             f"oracle={f.oracle} confidence={f.confidence} "
+            f"triage={f.triage_verdict} triage_confidence={f.triage_confidence} "
             f"suspicious={f.suspicious_backends}: {f.evidence}"
         )
+        if f.false_positive_reason:
+            lines.append(f"  - false_positive_reason={f.false_positive_reason}")
+        if f.triage_evidence:
+            lines.append(f"  - triage_evidence={f.triage_evidence}")
     lines.extend(["", "## Reproduce", "", "```bash", "python reproduce.py", "```"])
     lines.extend(["", "## Environment", "", "```json"])
     lines.append(json.dumps(collect_environment(), ensure_ascii=False, indent=2))

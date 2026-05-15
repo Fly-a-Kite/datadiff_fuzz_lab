@@ -1,4 +1,5 @@
 from datadiff.datagen import generate_case
+from datadiff.dsl import Case, ColumnSpec, Program, TableData
 from datadiff.normalizer import NormalizedResult
 from datadiff.oracle import evaluate_case
 
@@ -43,3 +44,204 @@ def test_oracle_no_mismatch_for_equal_results():
         },
     )
     assert findings == []
+
+
+def test_oracle_classifies_special_float_before_filter():
+    case = Case(
+        "case-nan",
+        1,
+        [
+            TableData(
+                "t0",
+                [ColumnSpec("y", "float")],
+                [{"y": float("nan")}, {"y": 1.0}],
+            )
+        ],
+        Program("prog-nan", 1, [{"op": "filter", "column": "y", "cmp": ">", "value": 0.0}]),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["y"], [[1]]),
+            "b": NormalizedResult("b", "ok", ["y"], [[None], [1]]),
+        },
+    )
+    assert findings
+    assert findings[0].root_cause == "nan_inf_semantics"
+
+
+def test_oracle_classifies_modulo_before_join_or_cast():
+    case = Case(
+        "case-mod-join-cast",
+        11,
+        [
+            TableData("t0", [ColumnSpec("id", "int"), ColumnSpec("x", "int")], [{"id": 1, "x": -3}]),
+            TableData("t1", [ColumnSpec("id", "int"), ColumnSpec("j", "int")], [{"id": 1, "j": 10}]),
+        ],
+        Program(
+            "prog-mod-join-cast",
+            11,
+            [
+                {"op": "join", "table": "t1", "left_on": "id", "right_on": "id", "how": "left"},
+                {"op": "mutate", "column": "m", "expr": {"kind": "arith_const", "op": "mod", "source": "x", "value": 2}},
+                {"op": "mutate", "column": "xf", "expr": {"kind": "cast", "source": "x", "to": "float"}},
+            ],
+        ),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["id", "j", "m", "x", "xf"], [[1, 10, 1, -3, -3.0]]),
+            "b": NormalizedResult("b", "ok", ["id", "j", "m", "x", "xf"], [[1, 10, -1, -3, -3.0]]),
+        },
+    )
+
+    assert findings
+    assert findings[0].root_cause == "arithmetic_expression"
+
+
+def test_oracle_classifies_groupby_after_join_as_aggregation():
+    case = Case(
+        "case-join-groupby",
+        12,
+        [
+            TableData("t0", [ColumnSpec("id", "int"), ColumnSpec("x", "int")], [{"id": 1, "x": 3}]),
+            TableData("t1", [ColumnSpec("id", "int"), ColumnSpec("j", "int")], [{"id": 1, "j": 10}]),
+        ],
+        Program(
+            "prog-join-groupby",
+            12,
+            [
+                {"op": "join", "table": "t1", "left_on": "id", "right_on": "id", "how": "left"},
+                {
+                    "op": "groupby",
+                    "keys": ["id"],
+                    "aggs": [{"column": "x", "func": "count", "as": "count_x"}],
+                },
+            ],
+        ),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["count_x", "id"], [[1, 1]]),
+            "b": NormalizedResult("b", "ok", ["count_x", "id"], [[2, 1]]),
+        },
+    )
+
+    assert findings
+    assert findings[0].root_cause == "groupby_aggregation"
+
+
+def test_oracle_classifies_grouped_topk_null_sort_key():
+    case = Case(
+        "case-null-agg-topk",
+        13,
+        [
+            TableData(
+                "t0",
+                [ColumnSpec("g", "str", nullable=False), ColumnSpec("x", "int")],
+                [{"g": "a", "x": None}, {"g": "b", "x": 5}],
+            )
+        ],
+        Program(
+            "prog-null-agg-topk",
+            13,
+            [
+                {"op": "groupby", "keys": ["g"], "aggs": [{"column": "x", "func": "min", "as": "min_x"}]},
+                {"op": "select", "columns": ["min_x"]},
+                {"op": "sort", "columns": ["min_x"], "ascending": True},
+                {"op": "limit", "n": 4},
+            ],
+        ),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["min_x"], [[None], [5]]),
+            "b": NormalizedResult("b", "ok", ["min_x"], [[5]]),
+        },
+    )
+
+    assert findings
+    assert findings[0].root_cause == "grouped_topk_null_sort_key"
+
+
+def test_oracle_classifies_grouped_topk_null_sort_key_after_join():
+    case = Case(
+        "case-join-null-agg-topk",
+        15,
+        [
+            TableData(
+                "t0",
+                [ColumnSpec("id", "int", nullable=False), ColumnSpec("g", "str"), ColumnSpec("x", "int")],
+                [{"id": 1, "g": "a", "x": None}, {"id": 2, "g": "b", "x": 5}],
+            ),
+            TableData(
+                "t1",
+                [ColumnSpec("id", "int", nullable=False), ColumnSpec("tag", "str")],
+                [{"id": 1, "tag": "left"}, {"id": 2, "tag": "right"}],
+            ),
+        ],
+        Program(
+            "prog-join-null-agg-topk",
+            15,
+            [
+                {"op": "join", "table": "t1", "left_on": "id", "right_on": "id", "how": "inner"},
+                {"op": "groupby", "keys": ["g"], "aggs": [{"column": "x", "func": "min", "as": "min_x"}]},
+                {"op": "select", "columns": ["min_x"]},
+                {"op": "sort", "columns": ["min_x"], "ascending": True},
+                {"op": "limit", "n": 4},
+            ],
+        ),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["min_x"], [[None], [5]]),
+            "b": NormalizedResult("b", "ok", ["min_x"], [[5]]),
+        },
+    )
+
+    assert findings
+    assert findings[0].root_cause == "grouped_topk_null_sort_key"
+
+
+def test_oracle_classifies_float_group_key_instability():
+    case = Case(
+        "case-float-group-key-instability",
+        14,
+        [
+            TableData(
+                "t0",
+                [ColumnSpec("x", "int")],
+                [{"x": 0}, {"x": 0}],
+            )
+        ],
+        Program(
+            "prog-float-group-key-instability",
+            14,
+            [
+                {"op": "mutate", "column": "m_0", "expr": {"kind": "add_const", "source": "x", "value": -1}},
+                {"op": "filter", "column": "m_0", "cmp": "==", "value": -1},
+                {"op": "mutate", "column": "m_1", "expr": {"kind": "arith_const", "op": "mul", "source": "m_0", "value": 10}},
+                {"op": "mutate", "column": "m_3", "expr": {"kind": "arith_const", "op": "div", "source": "m_1", "value": 3}},
+                {"op": "groupby", "keys": ["m_3"], "aggs": [{"column": "m_0", "func": "min", "as": "min_m_0"}]},
+            ],
+        ),
+    )
+    findings = evaluate_case(
+        case,
+        {
+            "a": NormalizedResult("a", "ok", ["m_3", "min_m_0"], [[-3.3333333333, -1]]),
+            "b": NormalizedResult(
+                "b",
+                "ok",
+                ["m_3", "min_m_0"],
+                [[-3.3333333333, -1], [-3.3333333333, -1]],
+            ),
+        },
+    )
+
+    assert findings
+    assert findings[0].root_cause == "float_group_key_instability"

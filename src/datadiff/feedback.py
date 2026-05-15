@@ -10,8 +10,12 @@ from datadiff.util import CORPUS_DIR, dump_json
 @dataclass(slots=True)
 class FeedbackState:
     max_corpus: int = 256
+    persist_to_disk: bool = False
+    max_persisted: int = 4096
     seen_signatures: set[str] = field(default_factory=set)
     interesting_cases: list[Case] = field(default_factory=list)
+    persisted_count: int = 0
+    last_persisted_to_disk: bool = False
 
     def choose_case(self, seed: int, generated: Case) -> Case:
         if not self.interesting_cases or seed % 3 != 0:
@@ -20,6 +24,7 @@ class FeedbackState:
         return mutate_case(base, seed)
 
     def record(self, case: Case, behavior_signature: str, has_finding: bool) -> bool:
+        self.last_persisted_to_disk = False
         is_new = behavior_signature not in self.seen_signatures
         self.seen_signatures.add(behavior_signature)
         if not (is_new or has_finding):
@@ -28,7 +33,10 @@ class FeedbackState:
             self.interesting_cases.append(case)
         elif has_finding:
             self.interesting_cases[int(behavior_signature, 16) % self.max_corpus] = case
-        self._write_interesting_case(case, behavior_signature, has_finding)
+        if self.persist_to_disk and self.persisted_count < max(0, self.max_persisted):
+            self._write_interesting_case(case, behavior_signature, has_finding)
+            self.persisted_count += 1
+            self.last_persisted_to_disk = True
         return True
 
     def _write_interesting_case(self, case: Case, behavior_signature: str, has_finding: bool) -> None:

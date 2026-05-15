@@ -1,10 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 OracleMode = Literal["differential", "metamorphic", "both"]
-GeneratorProfile = Literal["common", "edge_float"]
+GeneratorProfile = Literal[
+    "common",
+    "edge_float",
+    "workflow",
+    "bughunt",
+    "bughunt_no_groupby",
+    "null_groupby_topk",
+    "null_agg_topk",
+    "float_group_key",
+]
+GuidanceStrategy = Literal["random", "guided"]
+LogLevel = Literal["full", "compact", "minimal"]
 
 
 @dataclass(slots=True)
@@ -16,8 +27,19 @@ class ExperimentConfig:
     enable_feedback: bool = True
     enable_reducer: bool = False
     enable_artifact: bool = True
+    enable_preflight_validation: bool = True
+    enable_preflight_repair: bool = True
+    persist_feedback_corpus: bool = False
+    feedback_persist_limit: int = 4096
+    compress_run_log: bool = True
+    artifact_limit: int | None = None
     oracle_mode: OracleMode = "differential"
     generator_profile: GeneratorProfile = "common"
+    guidance_strategy: GuidanceStrategy = "random"
+    guidance_candidate_pool: int = 1
+    guidance_targets: list[str] = field(default_factory=list)
+    metamorphic_variant_limit: int = 4
+    log_level: LogLevel = "compact"
 
     def to_dict(self) -> dict:
         return asdict(self)

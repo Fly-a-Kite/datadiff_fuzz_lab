@@ -1,0 +1,150 @@
+from datadiff.dsl import Case, ColumnSpec, Program, TableData
+from datadiff.triage import build_triage_report, supports_standalone_reproducer, write_standalone_reproducer
+
+
+def test_triage_marks_polars_nan_filter_as_documented_divergence():
+    case = Case(
+        "case-nan",
+        1,
+        [
+            TableData(
+                "t0",
+                [ColumnSpec("y", "float")],
+                [{"y": float("nan")}, {"y": 1.0}],
+            )
+        ],
+        Program("prog-nan", 1, [{"op": "filter", "column": "y", "cmp": ">", "value": 0.0}]),
+    )
+    report = build_triage_report(
+        case,
+        original_findings=[{"kind": "semantic_output_mismatch"}],
+        reproduced_findings=[
+            {
+                "kind": "semantic_output_mismatch",
+                "root_cause": "nan_inf_semantics",
+                "confidence": "high",
+                "suspicious_backends": ["polars"],
+            }
+        ],
+        config={"generator_profile": "edge_float"},
+        backends=["pandas", "polars", "duckdb", "sqlite"],
+    )
+    assert report["verdict"] == "documented_semantic_divergence"
+    assert report["paper_status"] == "valid_finding_not_bug"
+    assert report["documentation_refs"]
+
+
+def test_triage_marks_clear_common_subset_minority_as_candidate_bug():
+    case = Case(
+        "case-common",
+        2,
+        [TableData("t0", [ColumnSpec("x", "int")], [{"x": 1}, {"x": 2}])],
+        Program("prog-common", 2, [{"op": "filter", "column": "x", "cmp": ">", "value": 1}]),
+    )
+    report = build_triage_report(
+        case,
+        original_findings=[{"kind": "semantic_output_mismatch"}],
+        reproduced_findings=[
+            {
+                "kind": "semantic_output_mismatch",
+                "root_cause": "filter_predicate",
+                "confidence": "high",
+                "suspicious_backends": ["engine_x"],
+            }
+        ],
+        config={"generator_profile": "common"},
+        backends=["engine_a", "engine_b", "engine_x"],
+    )
+    assert report["verdict"] == "candidate_implementation_bug"
+
+
+def test_triage_does_not_treat_edge_float_profile_as_boundary_by_itself():
+    case = Case(
+        "case-edge-common",
+        22,
+        [TableData("t0", [ColumnSpec("x", "int")], [{"x": 1}, {"x": 2}])],
+        Program("prog-edge-common", 22, [{"op": "filter", "column": "x", "cmp": ">", "value": 1}]),
+    )
+    report = build_triage_report(
+        case,
+        original_findings=[{"kind": "semantic_output_mismatch"}],
+        reproduced_findings=[
+            {
+                "kind": "semantic_output_mismatch",
+                "root_cause": "filter_predicate",
+                "confidence": "high",
+                "suspicious_backends": ["engine_x"],
+            }
+        ],
+        config={"generator_profile": "edge_float"},
+        backends=["engine_a", "engine_b", "engine_x"],
+    )
+
+    assert report["verdict"] == "candidate_implementation_bug"
+
+
+def test_standalone_reproducer_supports_known_root_causes():
+    assert supports_standalone_reproducer(
+        {
+            "generator_profile": "common",
+            "features": {"contains_nan": False, "contains_inf": False},
+            "reproduced_roots": ["grouped_topk_null_sort_key"],
+        }
+    ) is True
+    assert supports_standalone_reproducer(
+        {
+            "generator_profile": "common",
+            "features": {"contains_nan": True, "contains_inf": False},
+            "reproduced_roots": ["nan_inf_semantics"],
+        }
+    ) is True
+    assert supports_standalone_reproducer(
+        {
+            "generator_profile": "common",
+            "features": {"contains_nan": False, "contains_inf": False},
+            "reproduced_roots": ["filter_predicate"],
+        }
+    ) is False
+
+
+def test_write_datafusion_standalone_reproducer_for_grouped_topk(tmp_path):
+    path = write_standalone_reproducer(
+        tmp_path,
+        {
+            "reproduced_roots": ["grouped_topk_null_sort_key"],
+        },
+    )
+
+    assert path.name == "standalone_datafusion_groupby_null_sortkey_limit.py"
+    text = path.read_text(encoding="utf-8")
+    assert "ORDER BY min_x ASC NULLS LAST LIMIT 20" in text
+    assert "DataFusion dropped the group" in text
+
+
+def test_triage_marks_boundary_semantics_as_expected_divergence():
+    case = Case(
+        "case-boundary",
+        3,
+        [TableData("t0", [ColumnSpec("x", "int")], [{"x": -3}, {"x": 4}])],
+        Program(
+            "prog-boundary",
+            3,
+            [{"op": "mutate", "column": "m", "expr": {"kind": "arith_const", "op": "mod", "source": "x", "value": 2}}],
+        ),
+    )
+    report = build_triage_report(
+        case,
+        original_findings=[{"kind": "semantic_output_mismatch"}],
+        reproduced_findings=[
+            {
+                "kind": "semantic_output_mismatch",
+                "root_cause": "arithmetic_expression",
+                "confidence": "high",
+                "suspicious_backends": ["sqlite"],
+            }
+        ],
+        config={"generator_profile": "common"},
+        backends=["pandas", "sqlite"],
+    )
+    assert report["verdict"] == "expected_semantic_divergence"
+    assert report["paper_status"] == "valid_finding_not_bug"

@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import time
+from contextlib import contextmanager
+from typing import Any
+
+from datadiff.backends.base import Backend, BackendResult
+from datadiff.dsl import Program, TableData
+
+
+class PyArrowBackend(Backend):
+    name = "pyarrow"
+
+    def _to_table(self, table: TableData):
+        import pyarrow as pa
+
+        schema = pa.schema(
+            [pa.field(column.name, _arrow_type(pa, column.type), nullable=column.nullable) for column in table.columns]
+        )
+        return pa.Table.from_pylist(table.rows, schema=schema)
+
+    def run(self, tables: list[TableData], program: Program, timeout_s: float = 5.0) -> BackendResult:
+        start = time.perf_counter()
+        try:
+            with _suppress_native_stderr():
+                import pyarrow.compute as pc
+
+                table_by_name = {table.name: table for table in tables}
+                arrow_tables = {table.name: self._to_table(table) for table in tables}
+                current_cols = [column.name for column in tables[0].columns]
+                current = arrow_tables[tables[0].name]
+
+                for op in program.operations:
+                    kind = op["op"]
+                    if kind == "join":
+                        right_data = table_by_name[op["table"]]
+                        right = arrow_tables[op["table"]]
+                        right_cols = [
+                            column.name
+                            for column in right_data.columns
+                            if column.name != op["right_on"] and column.name not in current_cols
+                        ]
+                        join_type = "left outer" if op["how"] == "left" else "inner"
+                        current = current.join(
+                            right.select([op["right_on"], *right_cols]),
+                            keys=op["left_on"],
+                            right_keys=op["right_on"],
+                            join_type=join_type,
+                            coalesce_keys=True,
+                            use_threads=False,
+                        )
+                        current_cols = [*current_cols, *right_cols]
+                        current = _select_existing(current, current_cols)
+                    elif kind == "filter":
+                        mask = _comparison_mask(pc, current[op["column"]], op["cmp"], op["value"])
+                        current = current.filter(mask)
+                    elif kind == "select":
+                        current_cols = list(op["columns"])
+                        current = current.select(current_cols)
+                    elif kind == "sort":
+                        direction = "ascending" if op["ascending"] else "descending"
+                        current = current.sort_by(
+                            [(column, direction) for column in op["columns"]],
+                            null_placement="at_end",
+                        )
+                    elif kind == "limit":
+                        current = current.slice(0, int(op["n"]))
+                    elif kind == "mutate":
+                        expr = op["expr"]
+                        values = _eval_expr(pc, current, expr)
+                        current, current_cols = _replace_column(current, current_cols, op["column"], values)
+                    elif kind == "groupby":
+                        keys = list(op["keys"])
+                        aggregates = [(agg["column"], agg["func"]) for agg in op["aggs"]]
+                        current = current.group_by(keys, use_threads=False).aggregate(aggregates)
+                        source_names = [*keys, *[f"{agg['column']}_{agg['func']}" for agg in op["aggs"]]]
+                        target_names = [*keys, *[agg["as"] for agg in op["aggs"]]]
+                        current = _select_existing(current, source_names).rename_columns(target_names)
+                        current_cols = target_names
+                    else:
+                        raise ValueError(kind)
+
+                data = current.to_pandas(use_threads=False)
+
+            return BackendResult(
+                self.name,
+                "ok",
+                data=data,
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return BackendResult(
+                self.name,
+                "error",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
+
+
+def _comparison_mask(pc, array: Any, comparator: str, value: Any):
+    scalar = value
+    if comparator == ">":
+        return pc.greater(array, scalar)
+    if comparator == ">=":
+        return pc.greater_equal(array, scalar)
+    if comparator == "<":
+        return pc.less(array, scalar)
+    if comparator == "<=":
+        return pc.less_equal(array, scalar)
+    if comparator == "==":
+        return pc.equal(array, scalar)
+    if comparator == "!=":
+        return pc.not_equal(array, scalar)
+    raise ValueError(comparator)
+
+
+def _eval_expr(pc, table: Any, expr: dict[str, Any]):
+    source = table[expr["source"]]
+    if expr["kind"] == "add_const":
+        return pc.add(source, expr["value"])
+    if expr["kind"] == "arith_const":
+        op = expr["op"]
+        if op == "sub":
+            return pc.subtract(source, expr["value"])
+        if op == "mul":
+            return pc.multiply(source, expr["value"])
+        if op == "div":
+            return pc.divide(pc.cast(source, "float64"), expr["value"])
+        if op == "mod":
+            raise ValueError("pyarrow backend does not support modulo in the common DSL subset")
+        raise ValueError(op)
+    if expr["kind"] == "cast" and expr["to"] == "float":
+        return pc.cast(source, "float64")
+    if expr["kind"] == "string_length":
+        return pc.utf8_length(source)
+    if expr["kind"] == "string_lower":
+        return pc.utf8_lower(source)
+    raise ValueError(expr["kind"])
+
+
+def _replace_column(table: Any, cols: list[str], column: str, values: Any) -> tuple[Any, list[str]]:
+    kept_cols = [col for col in cols if col != column]
+    out = table.select(kept_cols)
+    out = out.append_column(column, values)
+    return out, [*kept_cols, column]
+
+
+def _select_existing(table: Any, columns: list[str]):
+    return table.select([column for column in columns if column in table.column_names])
+
+
+def _arrow_type(pa, kind: str):
+    if kind == "int":
+        return pa.int64()
+    if kind == "float":
+        return pa.float64()
+    if kind == "bool":
+        return pa.bool_()
+    return pa.string()
+
+
+@contextmanager
+def _suppress_native_stderr():
+    import os
+    import sys
+
+    sys.stderr.flush()
+    original_fd = os.dup(2)
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        os.dup2(original_fd, 2)
+        os.close(original_fd)

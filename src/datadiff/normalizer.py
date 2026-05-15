@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import unicodedata
 from dataclasses import dataclass
@@ -41,13 +42,17 @@ def _norm_value(v: Any) -> Any:
     except Exception:
         pass
     if isinstance(v, float):
-        if math.isnan(v):
+        value = float(v)
+        if math.isnan(value):
             return {"kind": "nan"}
-        if math.isinf(v):
-            return {"kind": "inf", "sign": 1 if v > 0 else -1}
-        if v.is_integer() and abs(v) < 2**53:
-            return int(v)
-        return round(v, 10)
+        if math.isinf(value):
+            return {"kind": "inf", "sign": 1 if value > 0 else -1}
+        if value.is_integer() and abs(value) < 2**53:
+            return int(value)
+        rounded = float(round(value, 10))
+        if rounded.is_integer() and abs(rounded) < 2**53:
+            return int(rounded)
+        return rounded
     if isinstance(v, str):
         return unicodedata.normalize("NFC", v)
     if hasattr(v, "item"):
@@ -86,16 +91,21 @@ def normalize_result(result: BackendResult, program: Program, enable_normalizer:
     try:
         df = _to_pandas(result.data)
         original_columns = [str(c) for c in list(df.columns)]
-        columns = sorted(original_columns)
+        column_positions = sorted(enumerate(original_columns), key=lambda item: (item[1], item[0]))
+        columns = [name for _, name in column_positions]
         rows: list[list[Any]] = []
         for _, row in df.iterrows():
-            rows.append([_norm_value(row[c]) for c in columns])
+            rows.append([_norm_value(row.iloc[idx]) for idx, _ in column_positions])
         if enable_normalizer:
             # SQL/DataFrame backends differ on stable ordering for ties and on
             # whether intermediate order is observable. The default oracle is
             # bag-semantics; order-sensitive metamorphic checks should be tested
             # separately with explicit tie-breakers.
-            rows = sorted(rows, key=lambda r: repr(r))
+            rows = sorted(rows, key=_row_sort_key)
         return NormalizedResult(result.backend, "ok", columns=columns, rows=rows)
     except Exception as exc:  # noqa: BLE001
         return NormalizedResult(result.backend, "normalization_error", [], [], type(exc).__name__, str(exc)[:500])
+
+
+def _row_sort_key(row: list[Any]) -> str:
+    return json.dumps(row, ensure_ascii=False, sort_keys=True)
