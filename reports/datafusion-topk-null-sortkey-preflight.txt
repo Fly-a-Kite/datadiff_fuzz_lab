@@ -1,0 +1,20 @@
+datafusion=53.0.0
+pyarrow=24.0.0
+ok raw_null_sort_topk_control: expected_rows=1 actual_rows=1 rows=[(None,)]
+ok null_group_key_nonnull_min_control: expected_rows=1 actual_rows=1 rows=[(5,)]
+ok single_null_control: expected_rows=1 actual_rows=1 rows=[(None,)]
+ok single_null_order_only: expected_rows=1 actual_rows=1 rows=[(None,)]
+FAIL single_null_topk_asc_last: expected_rows=1 actual_rows=0 rows=[]
+FAIL single_null_topk_asc_default: expected_rows=1 actual_rows=0 rows=[]
+FAIL single_null_topk_asc_last_limit_one: expected_rows=1 actual_rows=0 rows=[]
+FAIL single_null_topk_asc_first: expected_rows=1 actual_rows=0 rows=[]
+ok single_null_topk_desc_last: expected_rows=1 actual_rows=1 rows=[(None,)]
+ok single_null_topk_desc_first: expected_rows=1 actual_rows=1 rows=[(None,)]
+FAIL mixed_null_and_value_topk: expected_rows=2 actual_rows=1 rows=[(5,)]
+FAIL single_null_max_desc_topk: expected_rows=1 actual_rows=0 rows=[]
+FAIL mixed_null_and_value_max_desc_topk: expected_rows=2 actual_rows=1 rows=[(5,)]
+ok single_null_sum_asc_topk_control: expected_rows=1 actual_rows=1 rows=[(None,)]
+ok single_null_avg_asc_topk_control: expected_rows=1 actual_rows=1 rows=[(None,)]
+ok mixed_limit_one_expected_value_only: expected_rows=1 actual_rows=1 rows=[(5,)]
+failing_cases=single_null_topk_asc_last,single_null_topk_asc_default,single_null_topk_asc_last_limit_one,single_null_topk_asc_first,mixed_null_and_value_topk,single_null_max_desc_topk,mixed_null_and_value_max_desc_topk
+exit_code=1

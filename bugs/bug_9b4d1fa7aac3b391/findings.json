@@ -1,0 +1,27 @@
+[
+  {
+    "confidence": "high",
+    "documentation_refs": [],
+    "evidence": "Backends returned different canonical tables; shapes={'pandas': (15, 1), 'duckdb': (15, 1), 'datafusion': (14, 1)}",
+    "false_positive": false,
+    "false_positive_reason": "",
+    "finding_id": "finding-9b4d1fa7aac3b391",
+    "kind": "semantic_output_mismatch",
+    "oracle": "differential",
+    "paper_status": "submitted_upstream_needs_external_confirmation",
+    "recommendation": [
+      "Minimize the case and include the DSL reference output in the artifact.",
+      "Submitted upstream as https://github.com/apache/datafusion/issues/22190.",
+      "Treat as confirmed only after backend documentation or maintainers establish the expected behavior."
+    ],
+    "root_cause": "groupby_aggregation",
+    "severity": "critical",
+    "signature": "9b4d1fa7aac3b391",
+    "suspicious_backends": [
+      "datafusion"
+    ],
+    "triage_confidence": "high",
+    "triage_evidence": "Independent DSL reference agrees with ['duckdb', 'pandas'] and disagrees with ['datafusion'].",
+    "triage_verdict": "candidate_implementation_bug"
+  }
+]

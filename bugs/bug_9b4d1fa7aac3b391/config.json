@@ -1,0 +1,27 @@
+{
+  "artifact_limit": 5,
+  "compress_run_log": true,
+  "enable_artifact": true,
+  "enable_differential_oracle": true,
+  "enable_feedback": true,
+  "enable_metamorphic_oracle": true,
+  "enable_normalizer": true,
+  "enable_preflight_repair": true,
+  "enable_preflight_validation": true,
+  "enable_reducer": false,
+  "enable_type_aware_generation": true,
+  "feedback_persist_limit": 4096,
+  "generator_profile": "bughunt",
+  "guidance_candidate_pool": 8,
+  "guidance_strategy": "guided",
+  "guidance_targets": [
+    "filter",
+    "mutate",
+    "join",
+    "expressions"
+  ],
+  "log_level": "minimal",
+  "metamorphic_variant_limit": 8,
+  "oracle_mode": "both",
+  "persist_feedback_corpus": false
+}

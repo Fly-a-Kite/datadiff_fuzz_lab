@@ -1,0 +1,454 @@
+{
+  "case_id": "case-00008632-bughunt-mut-8676-mut-8844",
+  "program": {
+    "operations": [
+      {
+        "how": "inner",
+        "left_on": "id",
+        "op": "join",
+        "right_on": "id",
+        "table": "t1"
+      },
+      {
+        "column": "m_0",
+        "expr": {
+          "kind": "add_const",
+          "source": "y",
+          "value": -2
+        },
+        "op": "mutate"
+      },
+      {
+        "cmp": "<=",
+        "column": "m_0",
+        "op": "filter",
+        "value": 0.0
+      },
+      {
+        "columns": [
+          "flag",
+          "g",
+          "j",
+          "m_0",
+          "tag",
+          "x",
+          "y"
+        ],
+        "op": "select"
+      },
+      {
+        "aggs": [
+          {
+            "as": "min_x",
+            "column": "x",
+            "func": "min"
+          },
+          {
+            "as": "count_m_0",
+            "column": "m_0",
+            "func": "count"
+          }
+        ],
+        "keys": [
+          "g"
+        ],
+        "op": "groupby"
+      },
+      {
+        "columns": [
+          "count_m_0",
+          "min_x"
+        ],
+        "op": "select"
+      },
+      {
+        "ascending": true,
+        "columns": [
+          "count_m_0",
+          "min_x"
+        ],
+        "op": "sort"
+      },
+      {
+        "columns": [
+          "min_x"
+        ],
+        "op": "select"
+      },
+      {
+        "ascending": true,
+        "columns": [
+          "min_x"
+        ],
+        "op": "sort"
+      },
+      {
+        "n": 20,
+        "op": "limit"
+      }
+    ],
+    "program_id": "prog-00008632-mut-8676-mut-8844",
+    "seed": 8844
+  },
+  "seed": 8844,
+  "tables": [
+    {
+      "columns": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": "int"
+        },
+        {
+          "name": "g",
+          "nullable": true,
+          "type": "str"
+        },
+        {
+          "name": "x",
+          "nullable": true,
+          "type": "int"
+        },
+        {
+          "name": "y",
+          "nullable": true,
+          "type": "float"
+        },
+        {
+          "name": "flag",
+          "nullable": true,
+          "type": "bool"
+        },
+        {
+          "name": "s",
+          "nullable": true,
+          "type": "str"
+        }
+      ],
+      "name": "t0",
+      "rows": [
+        {
+          "flag": false,
+          "g": "LbAx",
+          "id": 0,
+          "s": "space value",
+          "x": -20,
+          "y": -28.339
+        },
+        {
+          "flag": true,
+          "g": "δelta",
+          "id": 1,
+          "s": "NSFdty",
+          "x": 0,
+          "y": null
+        },
+        {
+          "flag": true,
+          "g": "中文",
+          "id": 2,
+          "s": "MXkd",
+          "x": 1,
+          "y": 1.0
+        },
+        {
+          "flag": true,
+          "g": "alpha",
+          "id": 0,
+          "s": "gamma",
+          "x": -1,
+          "y": 0.0
+        },
+        {
+          "flag": null,
+          "g": "beta",
+          "id": 0,
+          "s": "xEzKaDr",
+          "x": -2,
+          "y": 40.573
+        },
+        {
+          "flag": false,
+          "g": "AnETJmx",
+          "id": 0,
+          "s": "sDcNrDM",
+          "x": 2,
+          "y": 0.0
+        },
+        {
+          "flag": false,
+          "g": "",
+          "id": 1,
+          "s": "中文",
+          "x": -100,
+          "y": -13.522
+        },
+        {
+          "flag": true,
+          "g": "hIBXne",
+          "id": 1,
+          "s": null,
+          "x": 1,
+          "y": 0.0
+        },
+        {
+          "flag": false,
+          "g": "beta",
+          "id": 3,
+          "s": "w",
+          "x": -1,
+          "y": null
+        },
+        {
+          "flag": true,
+          "g": "gamma",
+          "id": 1,
+          "s": "a",
+          "x": 10,
+          "y": 0.0
+        },
+        {
+          "flag": true,
+          "g": "a",
+          "id": 10,
+          "s": "δelta",
+          "x": -2,
+          "y": 5.454
+        },
+        {
+          "flag": false,
+          "g": "beta",
+          "id": 11,
+          "s": "yriAyl",
+          "x": 2,
+          "y": -1.0
+        },
+        {
+          "flag": null,
+          "g": null,
+          "id": 0,
+          "s": "beta",
+          "x": 78,
+          "y": -1.0
+        },
+        {
+          "flag": true,
+          "g": "alpha",
+          "id": 3,
+          "s": "beta",
+          "x": 0,
+          "y": 0.5
+        },
+        {
+          "flag": false,
+          "g": "a",
+          "id": 14,
+          "s": "e",
+          "x": null,
+          "y": -1.0
+        },
+        {
+          "flag": null,
+          "g": null,
+          "id": 0,
+          "s": "alpha",
+          "x": 0,
+          "y": 1.0
+        },
+        {
+          "flag": true,
+          "g": "δelta",
+          "id": 1,
+          "s": "gamma",
+          "x": -2,
+          "y": 0.5
+        },
+        {
+          "flag": false,
+          "g": "alpha",
+          "id": 17,
+          "s": "a",
+          "x": -96,
+          "y": -16.132
+        },
+        {
+          "flag": true,
+          "g": "sJvFMnm",
+          "id": 0,
+          "s": "a",
+          "x": 0,
+          "y": -0.5
+        },
+        {
+          "flag": true,
+          "g": "beta",
+          "id": 4,
+          "s": "a",
+          "x": 0,
+          "y": -1.0
+        },
+        {
+          "flag": false,
+          "g": "Yjdsi",
+          "id": 0,
+          "s": "a",
+          "x": 2,
+          "y": null
+        },
+        {
+          "flag": null,
+          "g": "VPKlHrY",
+          "id": 1,
+          "s": null,
+          "x": 10,
+          "y": -1.0
+        },
+        {
+          "flag": false,
+          "g": "alpha",
+          "id": 1,
+          "s": "中文",
+          "x": 0,
+          "y": -32.672
+        },
+        {
+          "flag": true,
+          "g": "qR",
+          "id": 0,
+          "s": "rui",
+          "x": -10,
+          "y": -0.5
+        },
+        {
+          "flag": false,
+          "g": null,
+          "id": 4,
+          "s": null,
+          "x": null,
+          "y": -1.0
+        },
+        {
+          "flag": false,
+          "g": "中文",
+          "id": 1,
+          "s": "",
+          "x": 0,
+          "y": 16.926
+        },
+        {
+          "flag": false,
+          "g": "gEU",
+          "id": 1,
+          "s": "中文",
+          "x": 77,
+          "y": 1.0
+        }
+      ]
+    },
+    {
+      "columns": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": "int"
+        },
+        {
+          "name": "j",
+          "nullable": true,
+          "type": "int"
+        },
+        {
+          "name": "z",
+          "nullable": true,
+          "type": "float"
+        },
+        {
+          "name": "tag",
+          "nullable": true,
+          "type": "str"
+        }
+      ],
+      "name": "t1",
+      "rows": [
+        {
+          "id": 1,
+          "j": -10,
+          "tag": "beta",
+          "z": -38.558
+        },
+        {
+          "id": 1,
+          "j": -1,
+          "tag": "NkaorLS",
+          "z": -1.0
+        },
+        {
+          "id": 2,
+          "j": -64,
+          "tag": null,
+          "z": 0.5
+        },
+        {
+          "id": 1,
+          "j": null,
+          "tag": null,
+          "z": -1.0
+        },
+        {
+          "id": 4,
+          "j": -10,
+          "tag": null,
+          "z": 0.0
+        },
+        {
+          "id": 2,
+          "j": 0,
+          "tag": null,
+          "z": -1.0
+        },
+        {
+          "id": 0,
+          "j": -10,
+          "tag": null,
+          "z": 1.0
+        },
+        {
+          "id": 1,
+          "j": 10,
+          "tag": "wQ",
+          "z": 1.0
+        },
+        {
+          "id": 3,
+          "j": 3,
+          "tag": "tag_3",
+          "z": 3.0
+        },
+        {
+          "id": 10,
+          "j": 10,
+          "tag": "tag_10",
+          "z": 10.0
+        },
+        {
+          "id": 11,
+          "j": 11,
+          "tag": "tag_11",
+          "z": 11.0
+        },
+        {
+          "id": 14,
+          "j": 14,
+          "tag": "tag_14",
+          "z": 14.0
+        },
+        {
+          "id": 17,
+          "j": 17,
+          "tag": "tag_17",
+          "z": 17.0
+        }
+      ]
+    }
+  ]
+}

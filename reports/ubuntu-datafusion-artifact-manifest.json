@@ -1,0 +1,139 @@
+{
+  "candidate_bug_family": "grouped_topk_null_sort_key@datafusion",
+  "status": "submitted_upstream_needs_external_confirmation",
+  "upstream_issue": "https://github.com/apache/datafusion/issues/22190",
+  "upstream_submitted": "2026-05-15",
+  "environment": {
+    "pip_freeze": "reports/pip-freeze-ubuntu.txt",
+    "uname": "reports/uname-ubuntu.txt",
+    "lscpu": "reports/lscpu-ubuntu.txt",
+    "target_registry": "reports/target-registry-ubuntu.json"
+  },
+  "primary_artifact": {
+    "directory": "bugs/bug_9b4d1fa7aac3b391",
+    "triage_json": "bugs/bug_9b4d1fa7aac3b391/triage.json",
+    "triage_markdown": "bugs/bug_9b4d1fa7aac3b391/triage.md",
+    "standalone_reproducer": "bugs/bug_9b4d1fa7aac3b391/standalone_datafusion_groupby_null_sortkey_limit.py",
+    "upstream_issue_draft": "bugs/bug_9b4d1fa7aac3b391/upstream_issue.md",
+    "reduced_case": "bugs/bug_9b4d1fa7aac3b391/reduced_case.json",
+    "reduced_reproducer": "bugs/bug_9b4d1fa7aac3b391/reproduce_reduced.py",
+    "preflight_boundary_script": "scripts/datafusion_topk_null_sortkey_preflight.py",
+    "preflight_boundary_output": "reports/datafusion-topk-null-sortkey-preflight.txt",
+    "upstream_issue_checklist": "reports/datafusion-upstream-issue-checklist.md",
+    "upstream_issue_bundle": "reports/datafusion-upstream-issue-bundle.tar.gz",
+    "upstream_issue_bundle_sha256": "reports/datafusion-upstream-issue-bundle.tar.gz.sha256"
+  },
+  "experiments": [
+    {
+      "purpose": "main_domain_matrix",
+      "manifest": "runs/experiment-20260514T175130.json",
+      "summary": "reports/experiment-summary-experiment-20260514T175130.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T175130.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T175130-aggregates.csv",
+      "cases": 60000,
+      "candidate_findings": 13503,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "confirmation_matrix",
+      "manifest": "runs/experiment-20260514T180106.json",
+      "summary": "reports/experiment-summary-experiment-20260514T180106.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T180106.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T180106-aggregates.csv",
+      "cases": 10000,
+      "candidate_findings": 6744,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "independent_seed_domain_matrix",
+      "manifest": "runs/experiment-20260514T192105.json",
+      "summary": "reports/experiment-summary-experiment-20260514T192105.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T192105.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T192105-aggregates.csv",
+      "cases": 60000,
+      "candidate_findings": 13601,
+      "semantic_divergences": 0,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "pre_issue_sanity_matrix",
+      "manifest": "runs/experiment-20260514T194522.json",
+      "summary": "reports/experiment-summary-experiment-20260514T194522.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T194522.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T194522-aggregates.csv",
+      "cases": 3600,
+      "candidate_findings": 2336,
+      "semantic_divergences": 0,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "post_enhancement_null_agg_matrix",
+      "manifest": "runs/experiment-20260514T195546.json",
+      "summary": "reports/experiment-summary-experiment-20260514T195546.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T195546.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T195546-aggregates.csv",
+      "cases": 3000,
+      "candidate_findings": 2562,
+      "semantic_divergences": 0,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "post_triage_health_check",
+      "manifest": "runs/experiment-20260514T181521.json",
+      "summary": "reports/experiment-summary-experiment-20260514T181521.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T181521.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T181521-aggregates.csv",
+      "cases": 100,
+      "candidate_findings": 75,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "seeded_sensitivity_matrix",
+      "manifest": "runs/experiment-20260514T184753.json",
+      "summary": "reports/experiment-summary-experiment-20260514T184753.md",
+      "analysis": "reports/seeded-sensitivity-experiment-20260514T184753.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T184753-aggregates.csv",
+      "cases": 100000,
+      "candidate_findings": 39149,
+      "oracle_false_positives": 0
+    },
+    {
+      "purpose": "generalization_ablation_matrix",
+      "manifest": "runs/experiment-20260514T190631.json",
+      "summary": "reports/experiment-summary-experiment-20260514T190631.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T190631.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T190631-aggregates.csv",
+      "cases": 90000,
+      "candidate_findings": 61,
+      "semantic_divergences": 133,
+      "oracle_false_positives": 4128
+    },
+    {
+      "purpose": "non_datafusion_no_groupby_negative_control",
+      "manifest": "runs/experiment-20260514T193946.json",
+      "summary": "reports/experiment-summary-experiment-20260514T193946.md",
+      "analysis": "reports/experiment-analysis-experiment-20260514T193946.md",
+      "aggregate_csv": "reports/experiment-summary-experiment-20260514T193946-aggregates.csv",
+      "cases": 36000,
+      "candidate_findings": 0,
+      "semantic_divergences": 0,
+      "oracle_false_positives": 0
+    }
+  ],
+  "regression_tests": [
+    "tests/test_regression_findings.py::test_datafusion_grouped_topk_null_sort_key_is_candidate_bug",
+    "tests/test_regression_findings.py::test_datafusion_grouped_topk_null_max_sort_key_is_candidate_bug",
+    "tests/test_triage.py::test_write_datafusion_standalone_reproducer_for_grouped_topk",
+    "tests/test_cli.py::test_cli_triage_artifact_writes_datafusion_standalone"
+  ],
+  "summary_document": "reports/ubuntu-datafusion-confirmation.md",
+  "methodology_roadmap": "reports/icse-methodology-roadmap.md",
+  "ablation_audit": {
+    "markdown": "reports/ablation-audit-experiment-20260514T190631.md",
+    "csv": "reports/ablation-audit-experiment-20260514T190631.csv"
+  },
+  "pattern_analyses": {
+    "null_agg_topk_markdown": "reports/pattern-variants-null_agg_topk-experiment-20260514T195546.md",
+    "null_agg_topk_csv": "reports/pattern-variants-null_agg_topk-experiment-20260514T195546.csv"
+  }
+}
